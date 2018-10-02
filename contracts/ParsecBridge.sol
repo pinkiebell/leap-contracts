@@ -6,13 +6,16 @@
  * found in the LICENSE file in the root directory of this source tree.
  */
 
-pragma solidity ^0.4.19;
+pragma solidity ^0.4.24;
 
 import "openzeppelin-solidity/contracts/token/ERC20/ERC20.sol";
 import "openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "openzeppelin-solidity/contracts/math/Math.sol";
+
+import "./TransferrableToken.sol";
 import "./PriorityQueue.sol";
 import "./TxLib.sol";
+import "./IntrospectionUtil.sol";
 
 contract ParsecBridge {
   using SafeMath for uint256;
@@ -44,7 +47,8 @@ contract ParsecBridge {
 
   mapping(uint16 => PriorityQueue.Token) public tokens;
   mapping(address => bool) tokenColors;
-  uint16 public tokenCount = 0;
+  uint16 public erc20TokenCount = 0;
+  uint16 public nftTokenCount = 0;
 
   struct Slot {
     uint32 eventCounter;
@@ -82,13 +86,12 @@ contract ParsecBridge {
   uint32 depositCount = 0;
 
   struct Exit {
-    uint64 amount;
+    uint256 amount;
     uint16 color;
     address owner;
   }
   mapping(bytes32 => Exit) public exits;
-
-
+  
   constructor(uint256 _epochLength, uint256 _maxReward, uint256 _parentBlockInterval, uint256 _exitDuration) public {
     // init genesis preiod
     Period memory genesisPeriod;
@@ -111,17 +114,29 @@ contract ParsecBridge {
     emit EpochLength(epochLength);
   }
 
-  function registerToken(ERC20 _token) public {
+  function tokenCount() public view returns (uint256) {
+    return erc20TokenCount + nftTokenCount;
+  }
+
+  function registerToken(TransferrableToken _token) public {
     require(_token != address(0));
     require(!tokenColors[_token]);
+    uint16 color;
+    if (IntrospectionUtil.isERC721(_token)) {
+      color = 32769 + nftTokenCount; // NFT color namespace starts from 2^15 + 1
+      nftTokenCount += 1;
+    } else {
+      color = erc20TokenCount;
+      erc20TokenCount += 1;
+    }
     uint256[] memory arr = new uint256[](1);
     tokenColors[_token] = true;
-    tokens[tokenCount++] = PriorityQueue.Token({
+    tokens[color] = PriorityQueue.Token({
       addr: _token,
       heapList: arr,
       currentSize: 0
     });
-    emit NewToken(_token, tokenCount);
+    emit NewToken(_token, color);
   }
 
   function getSlot(uint256 _slotId) constant public returns (uint32, address, uint64, address, bytes32, uint32, address, uint64, address, bytes32) {
@@ -224,7 +239,7 @@ contract ParsecBridge {
     // auction
     else {
       if (slot.newStake > 0) {
-        tokens[0].addr.transfer(slot.newOwner, slot.newStake);
+        ERC20(tokens[0].addr).transfer(slot.newOwner, slot.newStake);
       }
       tokens[0].addr.transferFrom(tx.origin, this, _value);
       slot.newOwner = tx.origin;
@@ -242,7 +257,7 @@ contract ParsecBridge {
     Slot storage slot = slots[_slotId];
     require(lastCompleteEpoch + 1 >= slot.activationEpoch);
     if (slot.stake > 0) {
-      tokens[0].addr.transfer(slot.owner, slot.stake);
+      ERC20(tokens[0].addr).transfer(slot.owner, slot.stake);
       emit ValidatorLeave(slot.signer, _slotId, slot.tendermint, lastCompleteEpoch + 1);
     }
     slot.owner = slot.newOwner;
@@ -300,8 +315,8 @@ contract ParsecBridge {
     periods[_root] = newPeriod;
 
     // distribute rewards
-    uint256 totalSupply = tokens[0].addr.totalSupply();
-    uint256 stakedSupply = tokens[0].addr.balanceOf(this);
+    uint256 totalSupply = ERC20(tokens[0].addr).totalSupply();
+    uint256 stakedSupply = ERC20(tokens[0].addr).balanceOf(this);
     uint256 reward = maxReward;
     if (stakedSupply >= totalSupply.div(2)) {
       // 4 x br x as x (ts - as)
@@ -333,19 +348,6 @@ contract ParsecBridge {
     delete periods[hash];
   }
 
-  function readInvalidDepositProof(
-    bytes32[] _txData
-  ) public pure returns (
-    uint32 depositId,
-    uint64 value,
-    address signer
-  ) {
-    depositId = uint32(_txData[2] >> 240);
-    value = uint64(_txData[2] >> 176);
-    signer = address(_txData[2]);
-  }
-
-
   /*
    * _txData = [ 32b periodHash, (1b Proofoffset, 8b pos,  ..00.., 1b txData), 32b txData, 32b proof, 32b proof ]
    *
@@ -361,16 +363,13 @@ contract ParsecBridge {
       require(p.height > periods[tipHash].height - epochLength);
     }
     // check transaction proof
-    TxLib.validateProof(0, _txData);
+    bytes memory txData;
+    (, , txData) = TxLib.validateProof(0, _txData);
 
-    // check deposit values
-    uint32 depositId;
-    uint64 value;
-    address signer;
-    (depositId, value, signer) = readInvalidDepositProof(_txData);
+    TxLib.Tx memory txn = TxLib.parseTx(txData);
 
-    Deposit memory dep = deposits[depositId];
-    require(value != dep.amount || signer != dep.owner);
+    Deposit memory dep = deposits[uint32(txn.ins[0].outpoint.hash)];
+    require(txn.outs[0].value != dep.amount || txn.outs[0].owner != dep.owner);
 
     // delete invalid period
     deletePeriod(_txData[0]);
@@ -378,7 +377,7 @@ contract ParsecBridge {
     // slash operator
     slash(p.slot, 10 * maxReward);
     // reward 1 block reward
-    tokens[0].addr.transfer(msg.sender, maxReward);
+    ERC20(tokens[0].addr).transfer(msg.sender, maxReward);
   }
 
   function reportDoubleSpend(bytes32[] _proof, bytes32[] _prevProof) public {
@@ -440,23 +439,30 @@ contract ParsecBridge {
     }
   }
 
-  /*
-   * Add funds
+  /** 
+   * @notice Add to the network `(_amountOrTokenId)` amount of a `(_color)` tokens 
+   * or `(_amountOrTokenId)` token id if `(_color)` is NFT. 
+   * @dev Token should be registered with the Bridge first.
+   * @param _owner Account to transfer tokens from
+   * @param _amountOrTokenId Amount (for ERC20) or token ID (for ERC721) to transfer 
+   * @param _color Color of the token to deposit
    */
-  function deposit(address _owner, uint256 _amount, uint16 _color) public {
-    require(_color < tokenCount);
-    tokens[_color].addr.transferFrom(_owner, this, _amount);
+  function deposit(address _owner, uint256 _amountOrTokenId, uint16 _color) public {
+    require(tokens[_color].addr != address(0));
+    tokens[_color].addr.transferFrom(_owner, this, _amountOrTokenId);
     depositCount++;
     deposits[depositCount] = Deposit({
       height: periods[tipHash].height,
       owner: _owner,
       color: _color,
-      amount: _amount
+      amount: _amountOrTokenId
     });
-    emit NewDeposit(depositCount, _owner, _color, _amount);
+    emit NewDeposit(depositCount, _owner, _color, _amountOrTokenId);
   }
 
   function startExit(bytes32[] _proof, uint256 _oindex) public {
+    // root was submitted as period
+    require(periods[_proof[0]].parent > 0);
     // validate proof
     bytes32 txHash;
     bytes memory txData;
@@ -511,7 +517,8 @@ contract ParsecBridge {
     while (exitable_at <= block.timestamp && tokens[currentExit.color].currentSize > 0) {
       currentExit = exits[utxoId];
       if (currentExit.owner != 0 || currentExit.amount != 0) { // exit was removed
-        tokens[currentExit.color].addr.transfer(currentExit.owner, currentExit.amount);
+        // replace with transferFrom?
+        ERC20(tokens[currentExit.color].addr).transfer(currentExit.owner, currentExit.amount);
       }
       tokens[currentExit.color].delMin();
       delete exits[utxoId].owner;

@@ -6,10 +6,11 @@
  * found in the LICENSE file in the root directory of this source tree.
  */
  
-pragma solidity ^0.4.18;
+pragma solidity ^0.4.24;
 
 import "openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "openzeppelin-solidity/contracts/token/ERC20/ERC20.sol";
+import "./TransferrableToken.sol";
 
 /**
  * @title PriorityQueue
@@ -20,7 +21,7 @@ library PriorityQueue {
   using SafeMath for uint256;
 
   struct Token {
-    ERC20 addr;
+    TransferrableToken addr;
     uint256[] heapList;
     uint256 currentSize;
   }

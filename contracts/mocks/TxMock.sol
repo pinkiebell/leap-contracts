@@ -6,7 +6,7 @@
  * found in the LICENSE file in the root directory of this source tree.
  */
  
-pragma solidity ^0.4.22;
+pragma solidity ^0.4.24;
 
 import "../TxLib.sol";
 
@@ -70,5 +70,9 @@ contract TxMock {
     } else if (_type == TxLib.TxType.CompRsp) {
       return 6;
     }
+  }
+
+  function validateProof(bytes32[] _proof) public pure returns (uint64 txPos, bytes32 txHash, bytes memory txData) {
+    (txPos, txHash, txData) = TxLib.validateProof(0, _proof);
   }
 }

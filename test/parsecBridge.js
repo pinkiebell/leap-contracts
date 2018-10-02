@@ -12,6 +12,7 @@ import chai from 'chai';
 const ParsecBridge = artifacts.require('./ParsecBridge.sol');
 const PriorityQueue = artifacts.require('./PriorityQueue.sol');
 const SimpleToken = artifacts.require('SimpleToken');
+const SpaceDustNFT = artifacts.require('SpaceDustNFT');
 
 const should = chai
   .use(require('chai-as-promised'))
@@ -51,9 +52,9 @@ contract('Parsec', (accounts) => {
       });
 
       it('should allow to auction slot and submit block', async () => {
-        const data = parsec.contract.bet.getData(0, 100, alice, alice);
-        await token.approveAndCall(parsec.address, 1000, data, {from: alice});
-        await parsec.submitPeriod(0, p[0], '0x01', {from: alice}).should.be.fulfilled;
+        await token.approve(parsec.address, 1000, { from: alice });
+        await parsec.bet(0, 100, alice, alice, { from: alice });
+        await parsec.submitPeriod(0, p[0], '0x01', { from: alice }).should.be.fulfilled;
         p[1] = await parsec.tipHash();
       });
 
@@ -90,9 +91,8 @@ contract('Parsec', (accounts) => {
       });
 
       it('allow to auction another slot', async () => {
-        const data = parsec.contract.bet.getData(1, 100, charlie, charlie);
-        await token.approveAndCall(parsec.address, 1000, data, {from: charlie});
-
+        await token.approve(parsec.address, 1000, { from: charlie });
+        await parsec.bet(1, 100, charlie, charlie, { from: charlie });
       });
 
       it('should allow to activate auctioned slot and submit', async () => {
@@ -349,15 +349,30 @@ contract('Parsec', (accounts) => {
         let receipt = await parsec.deposit(bob, 200, 0, { from: bob });
         const depositId1 = receipt.logs[0].args.depositId.toNumber();
         // deposit 2 - here we use directDeposit without transfer
-        const data = parsec.contract.deposit.getData(alice, 300, 0);
-        receipt = await token.approveAndCall(parsec.address, 300, data, {from: alice}).should.be.fulfilled;
+
+        await token.approve(parsec.address, 300, { from: alice });
+        receipt = await parsec.deposit(alice, 300, 0, { from: alice }).should.be.fulfilled;
         const depositId2 = Buffer.from(receipt.receipt.logs[1].topics[1].replace('0x', ''), 'hex').readUInt32BE(28);
         assert(depositId1 < depositId2);
       });
+
+      it('should not allow to deposit non-registered tokens', async () => {
+        const nonRegisteredColor = 1;
+        await token.approve(parsec.address, 1000, { from: bob });
+        await parsec.deposit(bob, 200, nonRegisteredColor, { from: bob }).should.be.rejectedWith(EVMRevert);
+      });
+
+      it('should allow to deposit NFT tokens', async () => {
+        const nftToken = await SpaceDustNFT.new();
+        let receipt = await nftToken.mint(bob, 10, true, 2);
+        const tokenId = receipt.logs[0].args._tokenId;
+        receipt = await parsec.registerToken(nftToken.address);
+        const color = receipt.logs[0].args.color.toNumber();
+        await nftToken.approve(parsec.address, tokenId, { from: bob });
+        await parsec.deposit(bob, tokenId, color, { from: bob }).should.be.fulfilled;
+      });
     });
     describe('Exit', function() {
-
-
       it('should allow to exit valid utxo', async () => {
         const deposit = Tx.deposit(114, 50, alice);
         let transfer = Tx.transfer(
@@ -378,6 +393,16 @@ contract('Parsec', (accounts) => {
         await parsec.finalizeExits(0);
         const bal2 = await token.balanceOf(bob);
         assert(bal1.toNumber() < bal2.toNumber());
+      });
+
+      it('should not be able to exit fake periods', async () => {
+        const deposit = Tx.deposit(114, 50, alice);
+        let block = new Block(96).addTx(deposit);
+        let period = new Period(p[0], [block]);
+        const proof = period.proof(deposit);
+
+        // withdraw output
+        const event = await parsec.startExit(proof, 0).should.be.rejectedWith(EVMRevert);
       });
 
       it('should allow to exit valid utxo at index 2', async () => {
@@ -459,12 +484,14 @@ contract('Parsec', (accounts) => {
       // initialize contract
       parsec = await deployBridge(token, 8);
       p[0] = await parsec.tipHash();
-      let data = await parsec.contract.bet.getData(0, 100, alice, alice);
-      await token.approveAndCall(parsec.address, 1000, data, {from: alice});
+
+      await token.approve(parsec.address, 1000, { from: alice });
+      await parsec.bet(0, 100, alice, alice, { from: alice });
       token.transfer(charlie, 1000);
-      data = await parsec.contract.bet.getData(1, 100, charlie, charlie);
-      await token.approveAndCall(parsec.address, 1000, data, {from: charlie});
-      await parsec.bet(2, 100, charlie, charlie, {from: charlie}).should.be.fulfilled;
+
+      await token.approve(parsec.address, 1000, { from: charlie });
+      await parsec.bet(1, 100, charlie, charlie, { from: charlie });
+      await parsec.bet(2, 100, charlie, charlie, { from: charlie }).should.be.fulfilled;
     });
 
     describe('Double Spend', function() {
@@ -528,11 +555,6 @@ contract('Parsec', (accounts) => {
         await parsec.reportInvalidDeposit(proof, {from: charlie});
         const bal2 = (await parsec.getSlot(0))[2];
         assert(bal1.toNumber() > bal2.toNumber());
-
-        let [ readDepositId, readValue, readSigner ] = await parsec.readInvalidDepositProof(proof);
-        assert.equal(readDepositId.toNumber(), depositId);
-        assert.equal(readValue.toNumber(), 50);
-        assert.equal(readSigner, alice);
       });
       it('should allow to slash double deposit');
     });
@@ -550,12 +572,31 @@ contract('Parsec', (accounts) => {
       parsec = await deployBridge(token, 8);
     });
 
-    it('should register a new token', async () => {
-      const anotherToken = await SimpleToken.new();
+    it('should register a new ERC20 token', async () => {
       assert.equal((await parsec.tokens(0))[0], token.address);
-      await parsec.registerToken(anotherToken.address);
-      assert.equal(await parsec.tokenCount(), 2);
-      assert.equal((await parsec.tokens(1))[0], anotherToken.address);
+      assert.equal((await parsec.tokenCount()).toNumber(), 1);
+
+      const anotherToken = await SimpleToken.new();
+      const res = await parsec.registerToken(anotherToken.address);
+      
+      const expectedColor = 1;
+      assert.equal((await parsec.tokenCount()).toNumber(), 2);
+      assert.equal((await parsec.tokens(expectedColor))[0], anotherToken.address);
+      assert.equal(res.logs[0].event, 'NewToken');
+      assert.equal(res.logs[0].args.color.toNumber(), expectedColor);
+    });
+
+    it('should register a new ERC721 token', async () => {
+      assert.equal((await parsec.tokenCount()).toNumber(), 2);
+
+      const nftToken = await SpaceDustNFT.new();
+      const res = await parsec.registerToken(nftToken.address);
+
+      const expectedColor = 2 ** 15 + 1; // NFT tokens namespace starts from 2^15 + 1
+      assert.equal((await parsec.tokenCount()).toNumber(), 3);
+      assert.equal((await parsec.tokens(expectedColor))[0], nftToken.address);
+      assert.equal(res.logs[0].event, 'NewToken');
+      assert.equal(res.logs[0].args.color.toNumber(), expectedColor);
     });
 
     it('should fail when registering a same token again', async () => {

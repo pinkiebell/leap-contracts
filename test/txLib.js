@@ -59,7 +59,7 @@ function checkParse(rsp, txn) {
   for (let i = 0; i < txn.outputs.length; i++) {
     assert.equal(toInt(rsp[1][2 + txn.inputs.length * 5 + i * 5]), txn.outputs[i].value);
     assert.equal(toInt(rsp[1][3 + txn.inputs.length * 5 + i * 5]), txn.outputs[i].color);
-    assert.equal(toAddr(rsp[1][4 + txn.inputs.length * 5 + i * 5]), txn.outputs[i].address);
+    assert.equal(toAddr(rsp[1][4 + txn.inputs.length * 5 + i * 5]), txn.outputs[i].address.toLowerCase());
     if (txn.type === Type.COMP_RSP && i === 0) {
       assert.equal(toInt(rsp[1][5 + txn.inputs.length * 5 + i * 5]), 0); // gas price
       assert.equal(rsp[1][6 + txn.inputs.length * 5 + i * 5], tx.outputs[i].storageRoot); // storage root    
@@ -236,6 +236,38 @@ contract('TxLib', (accounts) => {
         const rsp = await txLib.parse(proof).should.be.fulfilled;
         checkParse(rsp, compResponse);
       });
+    });
+  });
+  describe('Utils', function() {
+    let txLib;
+
+    before(async () => {
+      txLib = await TxMock.new();
+    });
+
+    it('should allow to verify proof', async () => {
+      const blocks = [];
+      let block;
+
+      for (let i = 0; i < 32; i ++) {
+        block = new Block(i).addTx(Tx.deposit(i, value, bob, color));
+        blocks.push(block);
+      }
+      const period = new Period(alicePriv, blocks);
+      const proof = period.proof(Tx.deposit(12, value, bob, color));
+      await txLib.validateProof(proof).should.be.fulfilled;
+    });
+
+    it('should allow to verify proof with always 2 txnns', async () => {
+      const blocks = [];
+      let block;
+      for (let i = 0; i < 32; i ++) {
+        block = new Block(i).addTx(Tx.deposit(i, value, bob, color)).addTx(Tx.deposit(100 + i, value, bob, color));
+        blocks.push(block);
+      }
+      const period = new Period(alicePriv, blocks);
+      const proof = period.proof(Tx.deposit(12, value, bob, color));
+      await txLib.validateProof(proof).should.be.fulfilled;
     });
   });
 });
