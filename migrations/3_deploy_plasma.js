@@ -4,7 +4,7 @@ const truffleConfig = require('../truffle.js');
 
 const Bridge = artifacts.require('Bridge');
 const Vault = artifacts.require('Vault');
-const SimpleToken = artifacts.require('SimpleToken');
+const LeapToken = artifacts.require('LeapToken');
 const POSoperator = artifacts.require('POSoperator');
 const ExitHandler = artifacts.require('ExitHandler');
 const PriorityQueue = artifacts.require('PriorityQueue');
@@ -48,7 +48,8 @@ module.exports = (deployer, network, accounts) => {
   let data;
 
   deployer.then(async () => {
-    const nativeToken = await deployer.deploy(SimpleToken);
+    const leapToken = await LeapToken.deployed();
+    console.log('  ♻️  Reusing existing Leap Token:', leapToken.address);
 
     const bridgeCont = await deployer.deploy(Bridge);
     data = await bridgeCont.contract.initialize.getData(parentBlockInterval, maxReward);
@@ -70,7 +71,7 @@ module.exports = (deployer, network, accounts) => {
     await bridgeProxy.applyProposal(data, {from: admin});
 
     const vault = Vault.at(exitHandlerProxy.address);
-    data = await vault.contract.registerToken.getData(nativeToken.address, false);
+    data = await vault.contract.registerToken.getData(leapToken.address, false);
     await exitHandlerProxy.applyProposal(data, {from: admin});
 
     try {
