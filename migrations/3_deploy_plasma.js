@@ -8,7 +8,9 @@ const LeapToken = artifacts.require('LeapToken');
 const POSoperator = artifacts.require('POSoperator');
 const ExitHandler = artifacts.require('ExitHandler');
 const PriorityQueue = artifacts.require('PriorityQueue');
-const AdminableProxy = artifacts.require('AdminableProxy');
+const BridgeProxy = artifacts.require('BridgeProxy');
+const OperatorProxy = artifacts.require('OperatorProxy');
+const ExitHandlerProxy = artifacts.require('ExitHandlerProxy');
 
 const logError = err => { if (err) { console.log(err); } }
 
@@ -53,18 +55,18 @@ module.exports = (deployer, network, accounts) => {
 
     const bridgeCont = await deployer.deploy(Bridge);
     data = await bridgeCont.contract.initialize.getData(parentBlockInterval, maxReward);
-    const bridgeProxy = await deployer.deploy(AdminableProxy, bridgeCont.address, data, {from: admin});
+    const bridgeProxy = await deployer.deploy(BridgeProxy, bridgeCont.address, data, {from: admin});
 
     const pqLib = await deployer.deploy(PriorityQueue);
     ExitHandler.link('PriorityQueue', pqLib.address);
 
     const exitHandlerCont = await deployer.deploy(ExitHandler);
     data = await exitHandlerCont.contract.initializeWithExit.getData(bridgeProxy.address, exitDuration, exitStake);
-    const exitHandlerProxy = await deployer.deploy(AdminableProxy, exitHandlerCont.address, data, {from: admin});
+    const exitHandlerProxy = await deployer.deploy(OperatorProxy, exitHandlerCont.address, data, {from: admin});
 
     const operatorCont = await deployer.deploy(POSoperator);
     data = await operatorCont.contract.initialize.getData(bridgeProxy.address, exitHandlerProxy.address, epochLength);
-    const operatorProxy = await deployer.deploy(AdminableProxy, operatorCont.address, data, {from: admin});
+    const operatorProxy = await deployer.deploy(ExitHandlerProxy, operatorCont.address, data, {from: admin});
 
     const bridge = Bridge.at(bridgeProxy.address);
     data = await bridge.contract.setOperator.getData(operatorProxy.address);

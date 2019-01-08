@@ -8,8 +8,8 @@
 
 pragma solidity ^0.4.24;
 
-import "openzeppelin-solidity/contracts/ownership/Ownable.sol";
-import "./AdminableProxy.sol";
+import "../node_modules/openzeppelin-solidity/contracts/ownership/Ownable.sol";
+import "./proxies/AdminableProxy.sol";
 
 contract MinGov is Ownable {
   
