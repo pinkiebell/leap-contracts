@@ -6,8 +6,6 @@
  * found in the LICENSE file in the root directory of this source tree.
  */
 
-/* solium-disable security/no-block-members */
-
 pragma solidity 0.4.24;
 
 import "../node_modules/openzeppelin-solidity/contracts/math/Math.sol";
@@ -459,5 +457,6 @@ contract ExitHandler is DepositHandler {
     emit Debug(callData);
   }
 
+  // solium-disable-next-line mixedcase
   uint256[50] private ______gap;
 }
